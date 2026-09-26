@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import Navbar from './components/Navbar'
 import CreateResearch from './pages/CreateResearch'
 import LandingPage from './pages/LandingPage'
+import AnalysisPage from './pages/AnalysisPage'
 
 export default function App() {
   return (
@@ -11,8 +12,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/new" element={<CreateResearch />} />
-          {/* Placeholder routes so Navbar links don't 404 */}
-          <Route path="/analysis" element={<PlaceholderPage title="Analysis" />} />
+          <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/about" element={<PlaceholderPage title="About" />} />
         </Routes>
       </div>
