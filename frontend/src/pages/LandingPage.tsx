@@ -6,6 +6,7 @@ import InsightsSection from '../components/InsightsSection'
 import MyLibrary from '../components/MyLibrary'
 import ProblemSection from '../components/ProblemSection'
 import ResearchMapPreview from '../components/ResearchMapPreview'
+import AboutSection from '../components/AboutSection'
 
 export default function LandingPage() {
   return (
@@ -17,6 +18,7 @@ export default function LandingPage() {
       <ResearchMapPreview />
       <AskSection />
       <InsightsSection />
+      <AboutSection />
       <Footer />
     </>
   )

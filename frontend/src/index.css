@@ -42,3 +42,8 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}

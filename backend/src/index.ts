@@ -1,5 +1,8 @@
+import 'dotenv/config'
 import cors from 'cors'
 import express from 'express'
+import analyzeRouter from './routes/analyzeRoute'
+import chatRouter from './routes/chat'
 
 const app = express()
 const PORT = 3001
@@ -12,6 +15,10 @@ app.use(express.json())
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', message: 'ResearchNest backend is running.' })
 })
+
+// Routes
+app.use('/api/analyze', analyzeRouter)
+app.use('/api/chat', chatRouter)
 
 // Start server
 app.listen(PORT, () => {

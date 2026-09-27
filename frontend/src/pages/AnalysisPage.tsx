@@ -1,8 +1,11 @@
 // ResearchNest – Analysis / Research Map page  (route: /analysis)
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import gsap from 'gsap'
+import { useResearch } from '../context/ResearchContext'
+import type { Finding, Evidence, Source, Insight, Research } from '../context/ResearchContext'
+import { sendChatMessage } from '../api/chatApi'
+import type { ChatMessage } from '../api/chatApi'
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -27,42 +30,6 @@ const C = {
   evidenceChip:   '#8090C8',
 } as const
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
-const DATA = {
-  topic:         'TOPIC NAME',
-  domain:        'Domain',
-  sourceCount:   4,
-  totalFindings: 10,
-  summary:       'Summary..',
-  updatedAgo:    '2h ago',
-}
-
-// ─── Canvas geometry ──────────────────────────────────────────────────────────
-// Internal canvas coordinate space — large enough to fit all nodes + Ask panel
-const CW = 1180
-const CH = 680
-
-// ─── S-curve cubic-bezier path ────────────────────────────────────────────────
-function epath(x1: number, y1: number, x2: number, y2: number): string {
-  if (Math.abs(x2 - x1) >= Math.abs(y2 - y1)) {
-    const mx = (x1 + x2) / 2
-    return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`
-  }
-  const my = (y1 + y2) / 2
-  return `M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}`
-}
-
-// ─── Edges [x1,y1 → x2,y2] — tuned to match Figma node positions ──────────
-const EDGES: Array<[number, number, number, number]> = [
-  [435, 335, 330, 195],    // Topic → Main Factor (right-mid → card bottom)
-  [505, 310, 590, 130],    // Topic → Use Case
-  [530, 310, 800, 145],    // Topic → Limitations
-  [510, 380, 610, 465],    // Topic → Alternative
-  [240, 280, 215, 400],    // Main Factor → Impact
-  [145, 195, 120, 325],    // Main Factor → Discovery
-  [285, 500, 330, 568],    // Impact → Evidence node
-]
-
 // ─── Chip ─────────────────────────────────────────────────────────────────────
 function Chip({ label, bg, color, border }: {
   label: string; bg: string; color: string; border?: string
@@ -71,25 +38,12 @@ function Chip({ label, bg, color, border }: {
     <span style={{
       display: 'inline-block', backgroundColor: bg, color,
       border: border ? `1px solid ${border}` : 'none',
-      borderRadius: 999, padding: '2.5px 10px',
-      fontSize: '0.63rem', fontFamily: 'Inter, sans-serif',
+      borderRadius: 999, padding: '3px 11px',
+      fontSize: '0.67rem', fontFamily: 'Inter, sans-serif',
       fontWeight: 500, whiteSpace: 'nowrap', lineHeight: 1.7,
     }}>
       {label}
     </span>
-  )
-}
-
-// ─── Bullet row ───────────────────────────────────────────────────────────────
-function BulletRow({ label, color }: { label: string; color: string }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
-      <div style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: color, flexShrink: 0 }} />
-      <span style={{ fontSize: '0.7rem', color: C.blue, fontFamily: 'Inter, sans-serif', flexShrink: 0, fontWeight: 500 }}>
-        {label}
-      </span>
-      <div style={{ flex: 1, height: 11, borderRadius: 5, backgroundColor: color, opacity: 0.35, maxWidth: 80 }} />
-    </div>
   )
 }
 
@@ -111,338 +65,664 @@ function NodeHeader({ label, bg, color }: { label: string; bg: string; color: st
   )
 }
 
-// ─── Generic node card wrapper ────────────────────────────────────────────────
-function NodeCard({ x, y, w, bg = C.white, border = C.border, delay = 0.2, children }: {
-  x: number; y: number; w: number; bg?: string; border?: string; delay?: number; children: ReactNode
-}) {
+// ─── Truncate text to N words (not chars) ─────────────────────────────────────
+function truncWords(text: string, n: number): string {
+  const words = text.split(' ')
+  if (words.length <= n) return text
+  return words.slice(0, n).join(' ') + '…'
+}
+
+// ─── Detail panel (modal overlay) ────────────────────────────────────────────
+interface DetailPanelProps {
+  finding: Finding | null
+  evidence: Evidence[]
+  sources: Source[]
+  onClose: () => void
+}
+
+function DetailPanel({ finding, evidence, sources, onClose }: DetailPanelProps) {
+  if (!finding) return null
+
+  const catColors: Record<Finding['category'], string> = {
+    'main-factor':  '#7880CC',
+    'use-case':     '#EAA8D8',
+    'limitation':   C.teal,
+    'alternative':  '#E8A8D8',
+    'impact':       '#D4AAEE',
+    'discovery':    C.darkCard,
+  }
+  const accentColor = catColors[finding.category] ?? C.blue
+
+  const relatedEvidence = evidence.filter(e => e.category === finding.category)
+
   return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.32, delay }}
+    <AnimatePresence>
+      {finding && (
+        <>
+          {/* Backdrop */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={onClose}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 100,
+              backgroundColor: 'rgba(12,13,69,0.45)',
+              backdropFilter: 'blur(2px)',
+            }}
+          />
+          {/* Panel */}
+          <motion.div
+            initial={{ opacity: 0, y: 24, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 24, scale: 0.96 }}
+            transition={{ duration: 0.24 }}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 101,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                pointerEvents: 'all',
+                backgroundColor: C.white,
+                borderRadius: 18,
+                boxShadow: '0 16px 56px rgba(12,13,69,0.28)',
+                width: '100%', maxWidth: 620,
+                maxHeight: '85vh',
+                overflow: 'hidden',
+                display: 'flex', flexDirection: 'column',
+                fontFamily: 'Inter, sans-serif',
+                margin: '0 16px',
+              }}
+            >
+              {/* Header band */}
+              <div style={{
+                backgroundColor: accentColor.startsWith('#3E4') ? C.darkCard : C.navy,
+                padding: '16px 22px 14px',
+                display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 5, fontWeight: 600 }}>
+                    {finding.category.replace(/-/g, ' ')}
+                  </div>
+                  <div style={{ fontSize: '1.1rem', fontWeight: 800, color: C.white, lineHeight: 1.2 }}>
+                    {finding.title}
+                  </div>
+                </div>
+                <button
+                  onClick={onClose}
+                  style={{
+                    background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 8,
+                    width: 30, height: 30, cursor: 'pointer', color: C.white,
+                    fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >×</button>
+              </div>
+
+              {/* Body */}
+              <div style={{ overflowY: 'auto', padding: '20px 22px 24px', flex: 1 }}>
+                {/* Full summary */}
+                <p style={{ fontSize: '0.88rem', color: C.navy, lineHeight: 1.65, marginBottom: 20 }}>
+                  {finding.summary}
+                </p>
+
+                {/* Tags */}
+                {finding.tags.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 20 }}>
+                    {finding.tags.map((t, i) => (
+                      <Chip key={i} label={t} bg={C.bg} color={C.blue} border={C.border} />
+                    ))}
+                  </div>
+                )}
+
+                {/* Evidence */}
+                {relatedEvidence.length > 0 && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>
+                      Supporting Evidence
+                    </div>
+                    {relatedEvidence.map((ev, i) => (
+                      <div key={i} style={{
+                        backgroundColor: C.evidenceBg, border: `1px solid ${C.evidenceBorder}`,
+                        borderRadius: 10, padding: '11px 14px', marginBottom: 8,
+                      }}>
+                        <p style={{ fontSize: '0.82rem', color: C.navy, lineHeight: 1.6, margin: 0 }}>
+                          {ev.text}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Sources */}
+                {sources.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>
+                      Sources
+                    </div>
+                    {sources.map((s, i) => (
+                      <div key={s.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
+                        <div style={{
+                          width: 20, height: 20, borderRadius: '50%',
+                          backgroundColor: C.bg, border: `1px solid ${C.border}`,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1,
+                        }}>
+                          <span style={{ fontSize: '0.55rem', color: C.blue, fontWeight: 700 }}>{i + 1}</span>
+                        </div>
+                        {s.url
+                          ? <a href={s.url} target="_blank" rel="noopener noreferrer"
+                              style={{ fontSize: '0.8rem', color: C.blue, textDecoration: 'underline', lineHeight: 1.5 }}>
+                              {s.label}
+                            </a>
+                          : <span style={{ fontSize: '0.8rem', color: '#6060A0', fontStyle: 'italic', lineHeight: 1.5 }}>{s.label}</span>
+                        }
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  )
+}
+
+// ─── Evidence detail panel ────────────────────────────────────────────────────
+interface EvidenceDetailProps {
+  ev: Evidence | null
+  sources: Source[]
+  onClose: () => void
+}
+
+function EvidenceDetailPanel({ ev, sources, onClose }: EvidenceDetailProps) {
+  if (!ev) return null
+  return (
+    <AnimatePresence>
+      {ev && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={onClose}
+            style={{ position: 'fixed', inset: 0, zIndex: 100, backgroundColor: 'rgba(12,13,69,0.45)', backdropFilter: 'blur(2px)' }}
+          />
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20 }} transition={{ duration: 0.22 }}
+            style={{ position: 'fixed', inset: 0, zIndex: 101, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}
+          >
+            <div onClick={e => e.stopPropagation()} style={{
+              pointerEvents: 'all',
+              backgroundColor: C.white, borderRadius: 18,
+              boxShadow: '0 16px 56px rgba(12,13,69,0.28)',
+              width: '100%', maxWidth: 560, maxHeight: '80vh', overflow: 'hidden',
+              display: 'flex', flexDirection: 'column',
+              fontFamily: 'Inter, sans-serif', margin: '0 16px',
+            }}>
+              {/* Header */}
+              <div style={{ backgroundColor: C.evidenceChip, padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.75)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700 }}>
+                  Evidence · {ev.category.replace(/-/g, ' ')}
+                </div>
+                <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: 8, width: 28, height: 28, cursor: 'pointer', color: C.white, fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
+              </div>
+              <div style={{ overflowY: 'auto', padding: '20px 22px 24px', flex: 1 }}>
+                {/* Evidence text */}
+                <div style={{ backgroundColor: C.evidenceBg, border: `1px solid ${C.evidenceBorder}`, borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
+                  <p style={{ fontSize: '0.9rem', color: C.navy, lineHeight: 1.7, margin: 0 }}>{ev.text}</p>
+                </div>
+                {/* Sources */}
+                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>Sources</div>
+                {sources.map((s, i) => (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
+                    <div style={{ width: 20, height: 20, borderRadius: '50%', backgroundColor: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                      <span style={{ fontSize: '0.55rem', color: C.blue, fontWeight: 700 }}>{i + 1}</span>
+                    </div>
+                    {s.url
+                      ? <a href={s.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.82rem', color: C.blue, textDecoration: 'underline', lineHeight: 1.5 }}>{s.label}</a>
+                      : <span style={{ fontSize: '0.82rem', color: '#6060A0', fontStyle: 'italic', lineHeight: 1.5 }}>{s.label}</span>
+                    }
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  )
+}
+
+import { ReactFlow, Background, Controls, useNodesState, useEdgesState, Handle, Position, BackgroundVariant } from '@xyflow/react'
+import type { Node, Edge } from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
+
+// ─── Node: Central Topic (React Flow) ─────────────────────────────────────────
+function TopicNodeRF({ data }: { data: any }) {
+  return (
+    <div style={{
+      width: 220,
+      backgroundColor: C.navy, border: `2px solid ${C.blue}`,
+      borderRadius: 20, padding: '20px 22px 22px', textAlign: 'center',
+      userSelect: 'none', boxShadow: '0 6px 28px rgba(12,13,69,0.30)',
+    }}>
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Left} style={{ opacity: 0 }} />
+      <div style={{ fontSize: '0.55rem', color: 'rgba(218,232,251,0.55)', letterSpacing: '0.12em', marginBottom: 4, textTransform: 'uppercase', fontWeight: 600 }}>
+        Research Topic
+      </div>
+      {data.domain && (
+        <div style={{ fontSize: '0.5rem', color: 'rgba(117,203,209,0.75)', letterSpacing: '0.08em', marginBottom: 6, textTransform: 'uppercase', fontWeight: 500 }}>
+          {data.domain}
+        </div>
+      )}
+      <div style={{ fontSize: '1rem', fontWeight: 800, color: '#FFF', letterSpacing: '0.03em', lineHeight: 1.22, textTransform: 'uppercase' }}>
+        {data.title || 'TOPIC NAME'}
+      </div>
+    </div>
+  )
+}
+
+// ─── Node: Finding (React Flow) ───────────────────────────────────────────────
+function FindingNodeRF({ data }: { data: any }) {
+  const finding = data.finding as Finding
+  const catColors: Record<string, string> = {
+    'main-factor':  '#7880CC',
+    'use-case':     '#EAA8D8',
+    'limitation':   C.teal,
+    'alternative':  '#E8A8D8',
+    'impact':       '#D4AAEE',
+    'discovery':    C.darkCard,
+  }
+  const bgColors: Record<string, string> = {
+    'main-factor':  C.white,
+    'use-case':     C.white,
+    'limitation':   C.tealCardBg,
+    'alternative':  C.white,
+    'impact':       C.white,
+    'discovery':    C.darkCard,
+  }
+  const borderColors: Record<string, string> = {
+    'main-factor':  C.border,
+    'use-case':     C.border,
+    'limitation':   C.tealCardBorder,
+    'alternative':  C.border,
+    'impact':       C.border,
+    'discovery':    C.darkCardBorder,
+  }
+  
+  const accent = catColors[finding.category] || C.navy
+  const bg = bgColors[finding.category] || C.white
+  const border = borderColors[finding.category] || C.border
+  const isDark = finding.category === 'discovery'
+  const textColor = isDark ? '#FFF' : C.navy
+
+  return (
+    <div 
+      onClick={data.onExpand}
       style={{
-        position: 'absolute', left: x, top: y, width: w,
+        width: 240,
         backgroundColor: bg, border: `1px solid ${border}`,
         borderRadius: 12, fontFamily: 'Inter, sans-serif',
         boxShadow: '0 3px 14px rgba(62,91,163,0.09)',
+        cursor: 'pointer',
       }}
     >
-      {children}
-    </motion.div>
-  )
-}
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
 
-// ─── Node: Central Topic ──────────────────────────────────────────────────────
-function TopicNode() {
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.82 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.42, delay: 0.1 }}
-      style={{
-        position: 'absolute', left: 410, top: 290, width: 200,
-        backgroundColor: C.navy, border: `2px solid ${C.blue}`,
-        borderRadius: 20, padding: '20px 22px 22px', textAlign: 'center',
-        userSelect: 'none', boxShadow: '0 6px 28px rgba(12,13,69,0.30)',
-      }}
-    >
-      <div style={{ fontSize: '0.55rem', color: 'rgba(218,232,251,0.55)', letterSpacing: '0.12em', marginBottom: 7, textTransform: 'uppercase', fontWeight: 600 }}>
-        Research Topic
-      </div>
-      <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#FFF', letterSpacing: '0.05em', lineHeight: 1.15, textTransform: 'uppercase' }}>
-        {DATA.topic}
-      </div>
-    </motion.div>
-  )
-}
+      {!isDark ? <NodeHeader label={finding.category.replace(/-/g, ' ')} bg={accent} color={finding.category === 'limitation' ? C.white : (finding.category === 'main-factor' ? C.white : C.navy)} /> : null}
+      
+      {isDark && (
+        <div style={{ fontSize: '0.62rem', fontWeight: 700, color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', padding: '13px 14px 0', letterSpacing: '0.1em' }}>
+          {finding.category}
+        </div>
+      )}
 
-// ─── Node: Main Factor ────────────────────────────────────────────────────────
-function MainFactorNode() {
-  return (
-    <NodeCard x={150} y={80} w={210} delay={0.18}>
-      <NodeHeader label="Core Contribution factors" bg={C.navy} color={C.white} />
-      <div style={{ padding: '10px 14px 13px' }}>
-        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: C.navy, marginBottom: 10 }}>Main Factor</div>
-        <BulletRow label="Factor 1" color="#7880CC" />
-        <BulletRow label="Factor 2" color="#7880CC" />
-        <BulletRow label="Factor 3" color="#7880CC" />
-        <div style={{ fontSize: '0.65rem', color: '#9090B0', marginTop: 8, marginBottom: 11, fontStyle: 'italic' }}>Summary...</div>
-        <div style={{ display: 'flex', gap: 5 }}>
-          <Chip label="tags"     bg="transparent"       color={C.purpleChip}  border={C.purpleChip} />
-          <Chip label="Evidence" bg={C.teal}             color={C.white} />
+      <div style={{ padding: isDark ? '8px 14px 14px' : '10px 14px 14px' }}>
+        <div style={{ fontSize: '0.85rem', fontWeight: 700, color: textColor, marginBottom: 10, lineHeight: 1.3 }}>
+          {finding.title}
+        </div>
+        <div style={{ fontSize: '0.68rem', color: isDark ? 'rgba(255,255,255,0.8)' : '#8080A8', marginTop: 8, marginBottom: 11, lineHeight: 1.5 }}>
+          {truncWords(finding.summary, 20)}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' }}>
+          {finding.tags.slice(0, 2).map((t: string, i: number) => (
+            <Chip key={i} label={t} bg={isDark ? "rgba(255,255,255,0.13)" : "transparent"} color={isDark ? "rgba(255,255,255,0.8)" : C.purpleChip} border={isDark ? undefined : C.purpleChip} />
+          ))}
+          <span style={{ fontSize: '0.6rem', color: isDark ? 'rgba(255,255,255,0.4)' : C.blue, marginLeft: 'auto', opacity: 0.7 }}>expand</span>
         </div>
       </div>
-    </NodeCard>
+    </div>
   )
 }
 
-// ─── Node: Important Discovery (dark slate card, far left) ───────────────────
-function DiscoveryNode() {
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -12 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.35, delay: 0.28 }}
-      style={{
-        position: 'absolute', left: 10, top: 310, width: 178,
-        backgroundColor: C.darkCard, border: `1px solid ${C.darkCardBorder}`,
-        borderRadius: 12, padding: '12px 14px',
-        boxShadow: '0 4px 16px rgba(30,30,90,0.22)',
-      }}
-    >
-      <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#FFF', marginBottom: 9 }}>Important discovery</div>
-      <div style={{
-        backgroundColor: 'rgba(255,255,255,0.09)', borderRadius: 7,
-        padding: '6px 9px', fontSize: '0.65rem',
-        color: 'rgba(255,255,255,0.38)', fontStyle: 'italic', marginBottom: 11,
-      }}>
-        Answer
-      </div>
-      <div style={{ display: 'flex', gap: 5 }}>
-        <Chip label="Sources"  bg="rgba(255,255,255,0.13)" color="rgba(255,255,255,0.70)" />
-        <Chip label="Evidence" bg="rgba(117,203,209,0.25)" color={C.teal} />
-      </div>
-    </motion.div>
-  )
-}
+// ─── Node: Evidence (React Flow) ──────────────────────────────────────────────
+function EvidenceNodeRF({ data }: { data: any }) {
+  const items = (data.evidence as Evidence[]).slice(0, 3)
+  const srcCount = data.sources.length
 
-// ─── Node: Impact (bottom-left) ───────────────────────────────────────────────
-function ImpactNode() {
   return (
-    <NodeCard x={148} y={396} w={210} delay={0.24}>
-      <NodeHeader label="Impact" bg="#D4AAEE" color={C.navy} />
-      <div style={{ padding: '10px 14px 13px' }}>
-        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: C.navy, marginBottom: 10 }}>Major consequence</div>
-        <BulletRow label="Impact 1" color="#D4AAEE" />
-        <BulletRow label="Impact 2" color="#D4AAEE" />
-        <BulletRow label="Impact 3" color="#D4AAEE" />
-        <div style={{ fontSize: '0.65rem', color: '#9090B0', marginTop: 8, marginBottom: 11, fontStyle: 'italic' }}>Summary...</div>
-        <div style={{ display: 'flex', gap: 5 }}>
-          <Chip label="tags"     bg="transparent" color={C.purpleChip} border={C.purpleChip} />
-          <Chip label="Evidence" bg={C.teal}       color={C.white} />
-        </div>
-      </div>
-    </NodeCard>
-  )
-}
-
-// ─── Node: Use Case (top-right) ───────────────────────────────────────────────
-function UseCaseNode() {
-  return (
-    <NodeCard x={570} y={40} w={190} delay={0.2}>
-      <NodeHeader label="Use Case" bg="#EAA8D8" color={C.navy} />
-      <div style={{ padding: '10px 14px 13px' }}>
-        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: C.navy, marginBottom: 10 }}>Practical Application</div>
-        <div style={{
-          backgroundColor: C.pinkBg, border: `1px solid ${C.pinkBorder}`,
-          borderRadius: 8, padding: '8px 10px',
-          fontSize: '0.65rem', color: '#B080C0', fontStyle: 'italic',
-          marginBottom: 11, minHeight: 58,
-        }}>
-          Summary...
-        </div>
-        <div style={{ display: 'flex', gap: 5 }}>
-          <Chip label="tags"     bg="transparent" color={C.purpleChip} border={C.purpleChip} />
-          <Chip label="Evidence" bg={C.teal}       color={C.white} />
-        </div>
-      </div>
-    </NodeCard>
-  )
-}
-
-// ─── Node: Limitations (top-far-right, teal) ─────────────────────────────────
-function LimitationsNode() {
-  return (
-    <NodeCard x={790} y={55} w={220} bg={C.tealCardBg} border={C.tealCardBorder} delay={0.26}>
-      <NodeHeader label="Limitations" bg={C.teal} color={C.white} />
-      <div style={{ padding: '10px 14px 13px' }}>
-        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: C.navy, marginBottom: 10 }}>Core Limitaton</div>
-        <div style={{
-          backgroundColor: C.tealMed, borderRadius: 8,
-          padding: '8px 10px', fontSize: '0.65rem',
-          color: '#1E6070', fontStyle: 'italic', marginBottom: 8,
-        }}>
-          Answer
-        </div>
-        <div style={{ fontSize: '0.65rem', color: '#3E8090', fontStyle: 'italic', marginBottom: 11 }}>Summary...</div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Chip label="Evidence" bg={C.teal} color={C.white} />
-        </div>
-      </div>
-    </NodeCard>
-  )
-}
-
-// ─── Node: Evidence followed by Impact (bottom-center) ───────────────────────
-function EvidenceNode() {
-  return (
-    <NodeCard x={360} y={558} w={190} bg={C.evidenceBg} border={C.evidenceBorder} delay={0.34}>
+    <div style={{
+      width: 280, backgroundColor: C.evidenceBg, border: `1px solid ${C.evidenceBorder}`,
+      borderRadius: 12, fontFamily: 'Inter, sans-serif',
+      boxShadow: '0 3px 14px rgba(62,91,163,0.09)'
+    }}>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
       <NodeHeader label="Evidence followed by impact" bg={C.evidenceChip} color={C.white} />
-      <div style={{ padding: '10px 14px 13px' }}>
-        <div style={{ fontSize: '0.78rem', fontWeight: 600, color: C.navy, marginBottom: 4, fontStyle: 'italic' }}>Evidence</div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
-          <Chip label="Sources" bg="rgba(128,144,200,0.18)" color="#6070A0" />
+      <div style={{ padding: '10px 14px 14px' }}>
+        {items.map((ev) => (
+          <div
+            key={ev.id}
+            onClick={() => data.onEvidenceClick(ev)}
+            style={{
+              backgroundColor: C.white, border: `1px solid ${C.evidenceBorder}`,
+              borderRadius: 8, padding: '8px 11px', marginBottom: 7,
+              cursor: 'pointer',
+            }}
+          >
+            <div style={{ fontSize: '0.62rem', color: C.evidenceChip, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3 }}>
+              {ev.category.replace(/-/g, ' ')}
+            </div>
+            <p style={{ fontSize: '0.72rem', color: C.navy, lineHeight: 1.55, margin: 0 }}>
+              {truncWords(ev.text, 18)}
+            </p>
+          </div>
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+          <Chip label={`${srcCount} Source${srcCount !== 1 ? 's' : ''}`} bg="rgba(128,144,200,0.18)" color="#6070A0" />
         </div>
       </div>
-    </NodeCard>
+    </div>
   )
 }
 
-// ─── Node: Alternative (right-bottom, partially behind Ask panel) ─────────────
-function AlternativeNode() {
+// ─── Node: Sources (React Flow) ───────────────────────────────────────────────
+function SourcesNodeRF({ data }: { data: any }) {
+  const sources = data.sources as Source[]
   return (
-    <NodeCard x={590} y={430} w={200} delay={0.3}>
-      <NodeHeader label="Alternative" bg="#E8A8D8" color={C.navy} />
-      <div style={{ padding: '10px 14px 13px' }}>
-        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: C.navy, marginBottom: 8 }}>Alternative Approach</div>
-        <div style={{
-          backgroundColor: '#F4F4FA', border: `1px solid ${C.border}`,
-          borderRadius: 7, padding: '7px 10px',
-          fontSize: '0.65rem', color: '#9090B0', fontStyle: 'italic', marginBottom: 7,
-        }}>
-          Answer
-        </div>
-        <div style={{ fontSize: '0.65rem', color: '#9090B0', fontStyle: 'italic', marginBottom: 9 }}>Summary...</div>
-        <div style={{ display: 'flex', gap: 5 }}>
-          <Chip label="tags"     bg="transparent" color={C.purpleChip} border={C.purpleChip} />
-          <Chip label="Evidence" bg={C.teal}       color={C.white} />
-        </div>
+    <div style={{
+      width: 205,
+      backgroundColor: C.white, border: `1px solid ${C.border}`,
+      borderRadius: 12, padding: '12px 14px',
+      boxShadow: '0 3px 14px rgba(62,91,163,0.09)',
+    }}>
+      <div style={{ fontSize: '0.62rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 11 }}>
+        Sources
       </div>
-    </NodeCard>
+      {sources.map((s, i) => (
+        <div key={s.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 9 }}>
+          <div style={{
+            width: 18, height: 18, borderRadius: '50%',
+            backgroundColor: C.bg, border: `1px solid ${C.border}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2,
+          }}>
+            <span style={{ fontSize: '0.5rem', color: C.blue, fontWeight: 700 }}>{i + 1}</span>
+          </div>
+          {s.url
+            ? <a href={s.url} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize: '0.68rem', color: C.blue, textDecoration: 'underline', lineHeight: 1.5 }}>
+                {s.label}
+              </a>
+            : <span style={{ fontSize: '0.68rem', color: '#9090B0', fontStyle: 'italic', lineHeight: 1.5 }}>{s.label}</span>
+          }
+        </div>
+      ))}
+    </div>
   )
 }
 
-// ─── Ask ResearchNest floating panel (overlaid on canvas, right side) ─────────
-function AskPanel({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  const [input, setInput] = useState('')
-  const chatMessages = [
-    { role: 'user',  text: 'Hello, ResearchNest help me understand API' },
-    {
-      role: 'ai',
-      text: 'An API (Application Programming Interface) is a set of rules and protocols that allows different software applications to communicate and exchange data with one another. Essentially, it acts as an invisible digital messenger, taking a request from one system, delivering it to another, and bringing back the response',
-    },
-    { role: 'user',  text: 'How is it used in Graph section?' },
-    { role: 'ai',    text: 'Analyzing...' },
-  ]
+const nodeTypes = {
+  topic: TopicNodeRF,
+  finding: FindingNodeRF,
+  evidence: EvidenceNodeRF,
+  sources: SourcesNodeRF,
+}
+
+// ─── Comparison insight bar (shown when research has real comparison labels) ──
+function ComparisonStrip({ insights }: { insights: Insight[] }) {
+  if (insights.length === 0) return null
+  const labelA = insights[0].labelA
+  const labelB = insights[0].labelB
+  // Only show if labels are meaningful (not default placeholder text)
+  const isReal = labelA && labelB && labelA !== 'Comparison data 1' && labelB !== 'Comparison data 2'
+  if (!isReal) return null
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, delay: 0.45 }}
+      style={{
+        backgroundColor: C.white, border: `1px solid ${C.border}`,
+        borderRadius: 12, padding: '14px 20px',
+        marginTop: 12, boxShadow: '0 2px 10px rgba(62,91,163,0.07)',
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.navy }} />
+        <span style={{ fontSize: '0.8rem', fontWeight: 700, color: C.navy }}>Comparison Insights</span>
+        {/* Legend */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginLeft: 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: C.blue }} />
+            <span style={{ fontSize: '0.7rem', color: C.navy, fontStyle: 'italic' }}>{labelA}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: C.teal }} />
+            <span style={{ fontSize: '0.7rem', color: C.navy, fontStyle: 'italic' }}>{labelB}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Metric rows */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {insights.map((ins, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ width: 90, fontSize: '0.72rem', color: C.navy, fontWeight: 600, flexShrink: 0 }}>
+              {ins.metric}
+            </div>
+            {/* Bar A */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ position: 'relative', height: 10, backgroundColor: C.bg, borderRadius: 999, overflow: 'hidden' }}>
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${ins.valueA}%` }}
+                  transition={{ duration: 0.6, delay: 0.5 + i * 0.07, ease: 'easeOut' }}
+                  style={{ position: 'absolute', left: 0, top: 0, height: '100%', backgroundColor: C.blue, borderRadius: 999 }}
+                />
+              </div>
+              <div style={{ position: 'relative', height: 10, backgroundColor: C.bg, borderRadius: 999, overflow: 'hidden' }}>
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${ins.valueB}%` }}
+                  transition={{ duration: 0.6, delay: 0.56 + i * 0.07, ease: 'easeOut' }}
+                  style={{ position: 'absolute', left: 0, top: 0, height: '100%', backgroundColor: C.teal, borderRadius: 999 }}
+                />
+              </div>
+            </div>
+            {/* Values */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: 34, alignItems: 'flex-end', flexShrink: 0 }}>
+              <span style={{ fontSize: '0.68rem', color: C.blue, fontWeight: 700 }}>{ins.valueA}</span>
+              <span style={{ fontSize: '0.68rem', color: C.teal, fontWeight: 700 }}>{ins.valueB}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  )
+}
+
+// ─── Ask ResearchNest panel ── real contextual AI chat ──────────────────────
+function AskPanel({ visible, onClose, research }: { visible: boolean; onClose: () => void; research: Research }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [input,    setInput   ] = useState('')
+  const [loading,  setLoading ] = useState(false)
+  const [chatError, setChatError] = useState<string | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [messages, loading])
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim()
+    if (!text || loading) return
+
+    const userMsg: ChatMessage = { role: 'user', text }
+    const nextHistory = [...messages, userMsg]
+    setMessages(nextHistory)
+    setInput('')
+    setLoading(true)
+    setChatError(null)
+
+    try {
+      const reply = await sendChatMessage({
+        message: text,
+        history: messages,
+        research: {
+          title:        research.title,
+          question:     research.question,
+          goal:         research.goal,
+          domain:       research.domain,
+          context:      research.context,
+          summary:      research.summary,
+          findings:     research.findings,
+          evidence:     research.evidence,
+          sources:      research.sources,
+          relationships: research.relationships,
+          insights:     research.insights,
+        },
+      })
+      setMessages([...nextHistory, { role: 'ai', text: reply }])
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'watsonx.ai could not answer this question.')
+    } finally {
+      setLoading(false)
+    }
+  }, [input, loading, messages, research])
 
   return (
     <AnimatePresence>
       {visible && (
         <motion.div
-          initial={{ opacity: 0, x: 30, scale: 0.96 }}
+          initial={{ opacity: 0, x: 16, scale: 0.97 }}
           animate={{ opacity: 1, x: 0, scale: 1 }}
-          exit={{ opacity: 0, x: 30 }}
-          transition={{ duration: 0.28 }}
+          exit={{ opacity: 0, x: 16 }}
+          transition={{ duration: 0.25 }}
           style={{
-            position: 'absolute',
-            right: 12, bottom: 12,
-            width: 310,
-            backgroundColor: C.white,
-            border: `1px solid ${C.border}`,
-            borderRadius: 14,
-            boxShadow: '0 8px 32px rgba(62,91,163,0.16)',
-            fontFamily: 'Inter, sans-serif',
-            zIndex: 20,
-            overflow: 'hidden',
+            position: 'relative', width: '100%',
+            backgroundColor: C.white, border: `1px solid ${C.border}`,
+            borderRadius: 14, boxShadow: '0 6px 28px rgba(62,91,163,0.13)',
+            fontFamily: 'Inter, sans-serif', overflow: 'hidden',
+            display: 'flex', flexDirection: 'column',
           }}
         >
           {/* Header */}
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '10px 14px 8px',
-            borderBottom: `1px solid ${C.border}`,
-          }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px 8px', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <div style={{
-                width: 24, height: 24, borderRadius: '50%',
-                backgroundColor: C.bg, border: `1px solid ${C.border}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-              }}>
+              <div style={{ width: 24, height: 24, borderRadius: '50%', backgroundColor: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
                   <circle cx="5.5" cy="5.5" r="4" stroke={C.blue} strokeWidth="1" />
                   <ellipse cx="5.5" cy="5.5" rx="1.8" ry="4" stroke={C.blue} strokeWidth="0.8" />
                 </svg>
               </div>
               <span style={{ fontSize: '0.8rem', fontWeight: 700, color: C.navy }}>Ask ResearchNest</span>
+              <span style={{ fontSize: '0.6rem', color: C.teal, fontWeight: 500, backgroundColor: '#DEF2F4', borderRadius: 999, padding: '1px 7px' }}>
+                {research.title ? research.title.slice(0, 24) + (research.title.length > 24 ? '…' : '') : 'Research'}
+              </span>
             </div>
-            <button
-              onClick={onClose}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9090B0', fontSize: '1rem', lineHeight: 1, padding: '0 2px' }}
-              title="Close"
-            >
-              ×
-            </button>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9090B0', fontSize: '1rem', lineHeight: 1, padding: '0 2px' }}>×</button>
           </div>
 
-          {/* Chat thread */}
-          <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 320, overflowY: 'auto' }}>
-            {chatMessages.map((m, i) => (
+          {/* Messages */}
+          <div ref={scrollRef} style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10, height: 340, overflowY: 'auto' }}>
+            {messages.length === 0 && (
+              <div style={{ textAlign: 'center', paddingTop: 40 }}>
+                <div style={{ fontSize: '0.7rem', color: '#9090B0', lineHeight: 1.7 }}>
+                  Ask anything about<br />
+                  <strong style={{ color: C.blue }}>{research.title || 'your research'}</strong>
+                </div>
+              </div>
+            )}
+            {messages.map((m, i) => (
               <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
                 {m.role === 'ai' && (
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
-                    <div style={{
-                      width: 18, height: 18, borderRadius: '50%',
-                      backgroundColor: C.bg, border: `1px solid ${C.border}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2,
-                    }}>
+                    <div style={{ width: 18, height: 18, borderRadius: '50%', backgroundColor: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
                       <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
                         <circle cx="4.5" cy="4.5" r="3" stroke={C.blue} strokeWidth="0.9" />
                         <ellipse cx="4.5" cy="4.5" rx="1.2" ry="3" stroke={C.blue} strokeWidth="0.7" />
                       </svg>
                     </div>
-                    <div style={{
-                      backgroundColor: C.bg, border: `1px solid ${C.border}`,
-                      borderRadius: '0 10px 10px 10px',
-                      padding: '8px 11px', maxWidth: 220,
-                      fontSize: '0.68rem', color: C.navy, lineHeight: 1.55,
-                    }}>
-                      {m.text === 'Analyzing...'
-                        ? <span style={{ color: '#9090B0', fontStyle: 'italic' }}>Analyzing...</span>
-                        : m.text
-                      }
+                    <div style={{ backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: '0 10px 10px 10px', padding: '8px 11px', maxWidth: 240, fontSize: '0.68rem', color: C.navy, lineHeight: 1.6 }}>
+                      {m.text}
                     </div>
                   </div>
                 )}
                 {m.role === 'user' && (
-                  <div style={{
-                    backgroundColor: C.navy,
-                    borderRadius: '10px 0 10px 10px',
-                    padding: '7px 11px', maxWidth: 210,
-                    fontSize: '0.68rem', color: C.white, lineHeight: 1.5,
-                  }}>
+                  <div style={{ backgroundColor: C.navy, borderRadius: '10px 0 10px 10px', padding: '7px 11px', maxWidth: 220, fontSize: '0.68rem', color: C.white, lineHeight: 1.5 }}>
                     {m.text}
                   </div>
                 )}
               </div>
             ))}
+            {chatError && (
+              <div role="alert" style={{ backgroundColor: '#FFF0F0', border: '1px solid #F0CCEA', borderRadius: 8, padding: '8px 10px', fontSize: '0.68rem', color: '#A03060', lineHeight: 1.5 }}>
+                {chatError}
+              </div>
+            )}
+            {loading && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                <div style={{ width: 18, height: 18, borderRadius: '50%', backgroundColor: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                  <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
+                    <circle cx="4.5" cy="4.5" r="3" stroke={C.blue} strokeWidth="0.9" />
+                    <ellipse cx="4.5" cy="4.5" rx="1.2" ry="3" stroke={C.blue} strokeWidth="0.7" />
+                  </svg>
+                </div>
+                <div style={{ backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: '0 10px 10px 10px', padding: '8px 11px', fontSize: '0.68rem', color: '#9090B0', fontStyle: 'italic', lineHeight: 1.6 }}>
+                  Thinking…
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Input bar */}
-          <div style={{ padding: '8px 12px 12px', borderTop: `1px solid ${C.border}` }}>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              backgroundColor: C.bg, border: `1px solid ${C.border}`,
-              borderRadius: 999, padding: '7px 12px',
-            }}>
+          {/* Input */}
+          <div style={{ padding: '8px 12px 12px', borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: 999, padding: '7px 12px' }}>
               <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
                 <circle cx="4.5" cy="4.5" r="3.5" stroke={C.teal} strokeWidth="1.1" />
                 <path d="M7.5 7.5l2 2" stroke={C.teal} strokeWidth="1.1" strokeLinecap="round" />
               </svg>
               <input
                 type="text"
-                placeholder="Ask Searchflow"
+                placeholder={`Ask about ${research.title || 'this research'}…`}
                 value={input}
                 onChange={e => setInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSend()}
+                disabled={loading}
                 style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: '0.73rem', color: C.navy, fontFamily: 'Inter, sans-serif' }}
               />
               <motion.button
-                whileHover={{ scale: 1.08 }}
-                whileTap={{ scale: 0.94 }}
-                style={{
-                  width: 26, height: 26, borderRadius: '50%',
-                  backgroundColor: C.navy, border: 'none', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                }}
+                whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.94 }}
+                onClick={handleSend}
+                disabled={loading || !input.trim()}
+                style={{ width: 26, height: 26, borderRadius: '50%', backgroundColor: loading ? '#9090B0' : C.navy, border: 'none', cursor: loading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                   <path d="M5 8V2M2 5l3-3 3 3" stroke="#FFF" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -456,79 +736,137 @@ function AskPanel({ visible, onClose }: { visible: boolean; onClose: () => void 
   )
 }
 
-// ─── Research canvas (grid + edges + nodes + Ask panel) ──────────────────────
-function ResearchCanvas({ zoom, askOpen, setAskOpen }: { zoom: number; askOpen: boolean; setAskOpen: (v: boolean) => void }) {
-  const edgeRef = useRef<SVGSVGElement>(null)
+// ─── Canvas ───────────────────────────────────────────────────────────────────
+interface CanvasProps {
+  zoom: number
+  askOpen: boolean
+  setAskOpen: (v: boolean) => void
+  findings: Finding[]
+  evidence: Evidence[]
+  sources: Source[]
+  relationships: any[]
+  title: string
+  domain: string
+  onFindingClick: (f: Finding) => void
+  onEvidenceClick: (ev: Evidence) => void
+}
+
+function ResearchCanvas({ findings, evidence, sources, relationships, title, domain, onFindingClick, onEvidenceClick }: Omit<CanvasProps, 'zoom' | 'askOpen' | 'setAskOpen'>) {
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
 
   useEffect(() => {
-    const svg = edgeRef.current
-    if (!svg) return
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const paths = svg.querySelectorAll<SVGPathElement>('path[data-e]')
-    paths.forEach((p, i) => {
-      const len = p.getTotalLength()
-      gsap.set(p, { strokeDasharray: len, strokeDashoffset: len })
-      gsap.to(p, { strokeDashoffset: 0, duration: 0.7, delay: 0.55 + i * 0.07, ease: 'power2.out' })
+    const initialNodes: Node[] = []
+    const initialEdges: Edge[] = []
+
+    // 1. Topic Node
+    initialNodes.push({
+      id: 'topic',
+      type: 'topic',
+      position: { x: 400, y: 280 },
+      data: { title, domain }
     })
-  }, [])
+
+    // 2. Findings
+    const positions = [
+      { x: 100, y: 80 },
+      { x: 480, y: 40 },
+      { x: 740, y: 80 },
+      { x: 740, y: 430 },
+      { x: 100, y: 430 },
+      { x: -60, y: 260 }
+    ]
+
+    findings.forEach((f, i) => {
+      let pos = { x: 0, y: 0 }
+      if (i < 6) {
+        pos = positions[i]
+      } else {
+        const angle = (i - 6) * 45 * (Math.PI / 180)
+        pos = { x: 400 + Math.cos(angle) * 350, y: 280 + Math.sin(angle) * 250 }
+      }
+      initialNodes.push({
+        id: f.id,
+        type: 'finding',
+        position: pos,
+        data: { finding: f, onExpand: () => onFindingClick(f) }
+      })
+    })
+
+    // Edges from relationships
+    if (relationships && relationships.length > 0) {
+      relationships.forEach((rel) => {
+        initialEdges.push({
+          id: `e-${rel.from}-${rel.to}`,
+          source: rel.from,
+          target: rel.to,
+          type: 'smoothstep',
+          label: rel.label,
+          labelStyle: { fontSize: 10, fill: '#6878B0' },
+          labelBgStyle: { fill: '#EAF1FC', fillOpacity: 0.85 },
+          animated: false,
+        })
+      })
+    } else {
+      findings.forEach((f) => {
+        initialEdges.push({
+          id: `e-topic-${f.id}`,
+          source: 'topic',
+          target: f.id,
+          type: 'smoothstep',
+          animated: false,
+        })
+      })
+    }
+
+    // 3. Evidence Node
+    initialNodes.push({
+      id: 'evidence',
+      type: 'evidence',
+      position: { x: 340, y: 530 },
+      data: { evidence, sources, onEvidenceClick }
+    })
+    initialEdges.push({
+      id: `e-topic-evidence`,
+      source: 'topic',
+      target: 'evidence',
+      type: 'smoothstep',
+      animated: false,
+    })
+
+    // 4. Sources Node (not draggable as per req, wait we can just let it be)
+    initialNodes.push({
+      id: 'sources',
+      type: 'sources',
+      position: { x: 820, y: 260 },
+      data: { sources },
+      draggable: false
+    })
+
+    setNodes(initialNodes)
+    setEdges(initialEdges)
+  }, [title, domain, findings, evidence, sources, relationships, onFindingClick, onEvidenceClick, setNodes, setEdges])
 
   return (
-    <div style={{ overflow: 'auto' }}>
-      {/* Sized layout wrapper for scroll */}
-      <div style={{ position: 'relative', width: CW * zoom, height: CH * zoom, flexShrink: 0, minHeight: 480 }}>
-        {/* Scaled canvas */}
-        <div style={{
-          position: 'absolute', top: 0, left: 0, width: CW, height: CH,
-          transform: `scale(${zoom})`, transformOrigin: 'top left',
-        }}>
-          {/* Dot grid */}
-          <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', opacity: 0.6 }}>
-            <defs>
-              <pattern id="rn-dots" x="0" y="0" width="26" height="26" patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="1.1" fill="#B5C8DC" />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#rn-dots)" />
-          </svg>
-
-          {/* Edge SVG with GSAP draw animation */}
-          <svg
-            ref={edgeRef}
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
-          >
-            <defs>
-              <marker id="rn-arrow" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
-                <polygon points="0 0,7 3,0 6" fill="#6878B0" />
-              </marker>
-            </defs>
-            {EDGES.map(([x1, y1, x2, y2], i) => (
-              <path
-                key={i}
-                data-e="1"
-                d={epath(x1, y1, x2, y2)}
-                stroke="#6878B0"
-                strokeWidth="1.5"
-                fill="none"
-                strokeLinecap="round"
-                markerEnd="url(#rn-arrow)"
-              />
-            ))}
-          </svg>
-
-          {/* Node cards */}
-          <TopicNode />
-          <MainFactorNode />
-          <DiscoveryNode />
-          <ImpactNode />
-          <EvidenceNode />
-          <UseCaseNode />
-          <LimitationsNode />
-          <AlternativeNode />
-
-          {/* Ask ResearchNest floating panel — overlaid on canvas, bottom-right */}
-          <AskPanel visible={askOpen} onClose={() => setAskOpen(false)} />
-        </div>
-      </div>
+    <div style={{ height: 520, width: '100%', borderRadius: 14, overflow: 'hidden', border: `1px solid ${C.borderMid}` }}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        nodeTypes={nodeTypes}
+        fitView
+        nodesDraggable
+        panOnScroll
+        zoomOnScroll
+        minZoom={0.3}
+        maxZoom={2}
+        defaultEdgeOptions={{ type: 'smoothstep', animated: false }}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="#B5C8DC" />
+        <Controls />
+      </ReactFlow>
     </div>
   )
 }
@@ -538,18 +876,11 @@ function IconBtn({ onClick, title, active = false, children }: {
   onClick?: () => void; title: string; active?: boolean; children: ReactNode
 }) {
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      style={{
-        width: 30, height: 30,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        backgroundColor: active ? C.navy : C.white,
-        border: `1px solid ${active ? C.navy : C.border}`,
-        borderRadius: 8, cursor: 'pointer',
-        transition: 'background 0.15s, border-color 0.15s',
-      }}
-    >
+    <button onClick={onClick} title={title} style={{
+      width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      backgroundColor: active ? C.navy : C.white, border: `1px solid ${active ? C.navy : C.border}`,
+      borderRadius: 8, cursor: 'pointer', transition: 'background 0.15s, border-color 0.15s',
+    }}>
       {children}
     </button>
   )
@@ -557,9 +888,12 @@ function IconBtn({ onClick, title, active = false, children }: {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function AnalysisPage() {
-  const [search,  setSearch ] = useState('')
-  const [zoom,    setZoom   ] = useState(1)
-  const [askOpen, setAskOpen] = useState(true)   // Ask panel open by default (matches Figma)
+  const { research }                   = useResearch()
+  const [search,  setSearch          ] = useState('')
+  const [zoom,    setZoom            ] = useState(1)
+  const [askOpen, setAskOpen         ] = useState(true)
+  const [detailFinding, setDetailFinding] = useState<Finding | null>(null)
+  const [detailEvidence, setDetailEvidence] = useState<Evidence | null>(null)
 
   const zoomIn  = () => setZoom(z => Math.min(2,    +(z + 0.15).toFixed(2)))
   const zoomOut = () => setZoom(z => Math.max(0.35, +(z - 0.15).toFixed(2)))
@@ -567,46 +901,42 @@ export default function AnalysisPage() {
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.3 }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}
       style={{ minHeight: '100vh', backgroundColor: C.bg, fontFamily: 'Inter, system-ui, sans-serif', paddingBottom: 56 }}
     >
+      {/* Detail panels (rendered at page level, above everything) */}
+      <DetailPanel
+        finding={detailFinding}
+        evidence={research.evidence}
+        sources={research.sources}
+        onClose={() => setDetailFinding(null)}
+      />
+      <EvidenceDetailPanel
+        ev={detailEvidence}
+        sources={research.sources}
+        onClose={() => setDetailEvidence(null)}
+      />
+
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 22px' }}>
 
         {/* ── Status bar ─────────────────────────────────────────────── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 12, paddingBottom: 8 }}>
-          {/* Left: pulse + italic status */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.teal, flexShrink: 0 }} />
             <span style={{ fontSize: '0.78rem', color: C.blue, fontStyle: 'italic' }}>
-              Analyzing Your entire research on the topic provided.....
+              Analyzing Your entire research on the topic provided…
             </span>
           </div>
-          {/* Right: Updated badge + Total Findings + avatar */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
             <span style={{ fontSize: '0.75rem', color: C.navy }}>Updated</span>
-            <span style={{
-              backgroundColor: C.navy, color: C.white,
-              borderRadius: 999, padding: '2px 9px',
-              fontSize: '0.65rem', fontWeight: 600,
-            }}>
-              {DATA.updatedAgo}
+            <span style={{ backgroundColor: C.navy, color: C.white, borderRadius: 999, padding: '2px 9px', fontSize: '0.65rem', fontWeight: 600 }}>
+              just now
             </span>
             <span style={{ fontSize: '0.75rem', color: C.navy, fontWeight: 500, marginLeft: 4 }}>Total Findings</span>
-            <span style={{
-              backgroundColor: C.teal, color: C.white,
-              borderRadius: 999, padding: '2px 11px',
-              fontSize: '0.72rem', fontWeight: 700,
-            }}>
-              {DATA.totalFindings}
+            <span style={{ backgroundColor: C.teal, color: C.white, borderRadius: 999, padding: '2px 11px', fontSize: '0.72rem', fontWeight: 700 }}>
+              {research.findings.length}
             </span>
-            {/* Avatar icon */}
-            <div style={{
-              width: 28, height: 28, borderRadius: '50%',
-              backgroundColor: C.bg, border: `1px solid ${C.border}`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
+            <div style={{ width: 28, height: 28, borderRadius: '50%', backgroundColor: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <circle cx="7" cy="7" r="5.5" stroke={C.blue} strokeWidth="1.1" />
                 <ellipse cx="7" cy="7" rx="2.2" ry="5.5" stroke={C.blue} strokeWidth="0.9" />
@@ -616,164 +946,95 @@ export default function AnalysisPage() {
           </div>
         </div>
 
-        {/* ── Research topic bar ─────────────────────────────────────── */}
-        <div style={{
-          backgroundColor: C.white, border: `1px solid ${C.border}`,
-          borderRadius: 10, padding: '10px 16px',
-          display: 'flex', alignItems: 'center',
-          marginBottom: 10, boxShadow: '0 1px 4px rgba(62,91,163,0.06)',
-        }}>
+        {/* ── Topic bar ──────────────────────────────────────────────── */}
+        <div style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px 16px', display: 'flex', alignItems: 'center', marginBottom: 10, boxShadow: '0 1px 4px rgba(62,91,163,0.06)' }}>
           <div style={{ flex: 1, textAlign: 'center' }}>
             <span style={{ fontSize: '1.1rem', color: '#9090B0', fontStyle: 'italic', fontFamily: 'Caveat, cursive' }}>
-              Research topic
+              {research.title || 'Research topic'}
             </span>
           </div>
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            {/* Source count pill */}
-            <div style={{
-              backgroundColor: C.navy, color: C.white,
-              borderRadius: 999, padding: '5px 14px',
-              fontSize: '0.73rem', fontWeight: 500,
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}>
+            <div style={{ backgroundColor: C.navy, color: C.white, borderRadius: 999, padding: '5px 14px', fontSize: '0.73rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
               Source count
-              <span style={{
-                backgroundColor: C.blue, color: C.white, borderRadius: '50%',
-                width: 20, height: 20,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '0.65rem', fontWeight: 700,
-              }}>
-                {DATA.sourceCount}
+              <span style={{ backgroundColor: C.blue, color: C.white, borderRadius: '50%', width: 20, height: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', fontWeight: 700 }}>
+                {research.sources.length}
               </span>
             </div>
-            {/* Domain pill */}
-            <div style={{
-              backgroundColor: C.teal, color: C.white,
-              borderRadius: 999, padding: '5px 14px',
-              fontSize: '0.73rem', fontWeight: 500,
-              display: 'flex', alignItems: 'center', gap: 7,
-            }}>
-              Domain
+            <div style={{ backgroundColor: C.teal, color: C.white, borderRadius: 999, padding: '5px 14px', fontSize: '0.73rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 7 }}>
+              {research.domain}
               <div style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: C.navy }} />
             </div>
           </div>
         </div>
 
         {/* ── Summary card ───────────────────────────────────────────── */}
-        <div style={{
-          backgroundColor: C.white, border: `1px solid ${C.border}`,
-          borderRadius: 10, padding: '16px 20px 36px',
-          marginBottom: 14, minHeight: 100,
-          boxShadow: '0 1px 4px rgba(62,91,163,0.06)', position: 'relative',
-        }}>
+        <div style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: '16px 20px 36px', marginBottom: 14, minHeight: 100, boxShadow: '0 1px 4px rgba(62,91,163,0.06)', position: 'relative' }}>
           <span style={{ fontFamily: 'Caveat, cursive', fontSize: '1.35rem', color: C.navy, fontStyle: 'italic' }}>
-            {DATA.summary}
+            {research.summary || research.question || research.context || 'Summary..'}
           </span>
-          {/* Evidence chip — bottom-right */}
           <div style={{ position: 'absolute', bottom: 12, right: 16 }}>
             <Chip label="Evidence" bg={C.teal} color={C.white} />
           </div>
         </div>
 
         {/* ── Map workspace ───────────────────────────────────────────── */}
-        <div style={{
-          border: `1px solid ${C.borderMid}`,
-          borderRadius: 14, overflow: 'hidden',
-          boxShadow: '0 2px 18px rgba(62,91,163,0.09)',
-          backgroundColor: C.bg,
-        }}>
-          {/* Toolbar */}
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '7px 12px', borderBottom: `1px solid ${C.border}`,
-            backgroundColor: C.bg,
-          }}>
-            {/* Left: search + Chart button */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                backgroundColor: C.white, border: `1px solid ${C.border}`,
-                borderRadius: 999, padding: '5px 12px', cursor: 'text',
-              }}>
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <circle cx="4.5" cy="4.5" r="3.5" stroke={C.blue} strokeWidth="1.2" />
-                  <path d="M7.5 7.5l2 2" stroke={C.blue} strokeWidth="1.2" strokeLinecap="round" />
-                </svg>
-                <input
-                  type="text"
-                  placeholder="Search the map"
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  style={{ border: 'none', outline: 'none', fontSize: '0.73rem', color: C.navy, background: 'transparent', width: 118, fontFamily: 'Inter, sans-serif' }}
-                />
-              </label>
-              <button style={{
-                backgroundColor: C.white, border: `1px solid ${C.border}`,
-                borderRadius: 8, padding: '5px 13px',
-                fontSize: '0.73rem', color: C.blue, cursor: 'pointer',
-                fontFamily: 'Inter, sans-serif', fontWeight: 500,
-              }}>
-                Chart
-              </button>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+          {/* Canvas takes remaining width */}
+          <div style={{ flex: 1, minWidth: 0, border: `1px solid ${C.borderMid}`, borderRadius: 14, overflow: 'hidden', boxShadow: '0 2px 18px rgba(62,91,163,0.09)', backgroundColor: C.bg }}>
+            {/* Toolbar */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 12px', borderBottom: `1px solid ${C.border}`, backgroundColor: C.bg }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 999, padding: '5px 12px', cursor: 'text' }}>
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                    <circle cx="4.5" cy="4.5" r="3.5" stroke={C.blue} strokeWidth="1.2" />
+                    <path d="M7.5 7.5l2 2" stroke={C.blue} strokeWidth="1.2" strokeLinecap="round" />
+                  </svg>
+                  <input type="text" placeholder="Search the map" value={search} onChange={e => setSearch(e.target.value)}
+                    style={{ border: 'none', outline: 'none', fontSize: '0.73rem', color: C.navy, background: 'transparent', width: 118, fontFamily: 'Inter, sans-serif' }} />
+                </label>
+                <button style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: '5px 13px', fontSize: '0.73rem', color: C.blue, cursor: 'pointer', fontFamily: 'Inter, sans-serif', fontWeight: 500 }}>Chart</button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <IconBtn title="Zoom in" onClick={zoomIn}>
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 2v7M2 5.5h7" stroke={C.blue} strokeWidth="1.5" strokeLinecap="round" /></svg>
+                </IconBtn>
+                <IconBtn title="Zoom out" onClick={zoomOut}>
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 5.5h7" stroke={C.blue} strokeWidth="1.5" strokeLinecap="round" /></svg>
+                </IconBtn>
+                <IconBtn title="Fit to screen" onClick={zoomFit}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 4V1h3M8 1h3v3M1 8v3h3M8 11h3V8" stroke={C.blue} strokeWidth="1.2" strokeLinecap="round" /></svg>
+                </IconBtn>
+                <IconBtn title="Ask ResearchNest" active={askOpen} onClick={() => setAskOpen(v => !v)}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <circle cx="6" cy="6" r="4.5" stroke={askOpen ? C.white : C.blue} strokeWidth="1.1" />
+                    <ellipse cx="6" cy="6" rx="1.8" ry="4.5" stroke={askOpen ? C.white : C.blue} strokeWidth="0.9" />
+                    <circle cx="6" cy="6" r="1.5" fill={askOpen ? C.white : C.blue} />
+                  </svg>
+                </IconBtn>
+                <span style={{ fontSize: '0.62rem', color: C.blue, marginLeft: 2, minWidth: 34 }}>
+                  {Math.round(zoom * 100)}%
+                </span>
+              </div>
             </div>
-
-            {/* Right: zoom + controls */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              {/* Magnifier icon */}
-              <IconBtn title="Zoom search">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <circle cx="5" cy="5" r="4" stroke={C.blue} strokeWidth="1.3" />
-                  <path d="M3.5 5h3M5 3.5v3M8.5 8.5l2 2" stroke={C.blue} strokeWidth="1.2" strokeLinecap="round" />
-                </svg>
-              </IconBtn>
-              {/* Menu lines */}
-              <IconBtn title="Options">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <path d="M1 3h10M1 6h10M1 9h10" stroke={C.blue} strokeWidth="1.3" strokeLinecap="round" />
-                </svg>
-              </IconBtn>
-              {/* Plus / zoom in */}
-              <IconBtn title="Zoom in" onClick={zoomIn}>
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <path d="M5.5 2v7M2 5.5h7" stroke={C.blue} strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </IconBtn>
-              {/* Minus / zoom out */}
-              <IconBtn title="Zoom out" onClick={zoomOut}>
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <path d="M2 5.5h7" stroke={C.blue} strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </IconBtn>
-              {/* Fit / full screen */}
-              <IconBtn title="Fit to screen" onClick={zoomFit}>
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <path d="M1 4V1h3M8 1h3v3M1 8v3h3M8 11h3V8" stroke={C.blue} strokeWidth="1.2" strokeLinecap="round" />
-                </svg>
-              </IconBtn>
-              {/* Expand arrows */}
-              <IconBtn title="Expand">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <path d="M1 1l4 4M1 3V1h2M7 1l4 4M9 1h2v2M1 11l4-4M1 9v2h2M11 11l-4-4M9 11h2V9" stroke={C.blue} strokeWidth="1.1" strokeLinecap="round" />
-                </svg>
-              </IconBtn>
-              {/* Ask ResearchNest toggle */}
-              <IconBtn title="Ask ResearchNest" active={askOpen} onClick={() => setAskOpen(v => !v)}>
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <circle cx="6" cy="6" r="4.5" stroke={askOpen ? C.white : C.blue} strokeWidth="1.1" />
-                  <ellipse cx="6" cy="6" rx="1.8" ry="4.5" stroke={askOpen ? C.white : C.blue} strokeWidth="0.9" />
-                  <circle cx="6" cy="6" r="1.5" fill={askOpen ? C.white : C.blue} />
-                </svg>
-              </IconBtn>
-              {/* Zoom % label */}
-              <span style={{ fontSize: '0.62rem', color: C.blue, marginLeft: 2, minWidth: 34 }}>
-                {Math.round(zoom * 100)}%
-              </span>
-            </div>
+            {/* Canvas */}
+            <ResearchCanvas
+              findings={research.findings} evidence={research.evidence}
+              sources={research.sources} relationships={research.relationships} 
+              title={research.title} domain={research.domain}
+              onFindingClick={setDetailFinding}
+              onEvidenceClick={setDetailEvidence}
+            />
           </div>
-
-          {/* Canvas */}
-          <ResearchCanvas zoom={zoom} askOpen={askOpen} setAskOpen={setAskOpen} />
+          {/* Ask panel - fixed width, outside canvas */}
+          {askOpen && (
+            <div style={{ width: 300, flexShrink: 0 }}>
+              <AskPanel visible={askOpen} onClose={() => setAskOpen(false)} research={research} />
+            </div>
+          )}
         </div>
+
+        {/* ── Comparison strip (only when research has real labelA/labelB) ─ */}
+        <ComparisonStrip insights={research.insights} />
 
       </div>
     </motion.div>
