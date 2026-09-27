@@ -331,11 +331,30 @@ function AskPanel() {
 // ─── Main page ────────────────────────────────────────────────────────────────
 type ViewMode = 'grid' | 'bar'
 
+function QualitativeComparisonPreview({ areas }: { areas: string[] }) {
+  return (
+    <div style={{ padding: '20px 22px', fontFamily: 'Inter, sans-serif' }}>
+      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: C.navy, marginBottom: 4 }}>Qualitative comparison preview</div>
+      <p style={{ fontSize: '0.7rem', color: C.blue, lineHeight: 1.5, margin: '0 0 14px' }}>
+        These are investigation prompts based on the comparison you entered, not evaluated results or scores.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {areas.map((area, index) => (
+          <div key={index} style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 10, fontSize: '0.74rem', color: C.navy, lineHeight: 1.55 }}>
+            <span style={{ color: C.blue, fontWeight: 700, marginRight: 8 }}>{index + 1}.</span>{area}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function InsightsPage() {
   const { research } = useResearch()
   const navigate     = useNavigate()
   const [view,   setView  ] = useState<ViewMode>('bar')
   const [search, setSearch] = useState('')
+  const isFallback = research.analysisMode === 'fallback-preview'
 
   // Guard: Insights is only for comparison research
   useEffect(() => {
@@ -345,8 +364,8 @@ export default function InsightsPage() {
   }, [research.researchType, navigate])
 
   const isComp   = research.researchType === 'comparison'
-  const labelA   = isComp ? research.insights[0]?.labelA ?? '' : ''
-  const labelB   = isComp ? research.insights[0]?.labelB ?? '' : ''
+  const labelA   = isComp ? research.insights[0]?.labelA ?? research.previewComparisonSubjects?.[0] ?? '' : ''
+  const labelB   = isComp ? research.insights[0]?.labelB ?? research.previewComparisonSubjects?.[1] ?? '' : ''
 
   // For Key Difference: use the discovery finding summary
   const discoveryFinding  = research.findings.find(f => f.category === 'discovery')
@@ -372,7 +391,7 @@ export default function InsightsPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.teal, flexShrink: 0 }} />
             <span style={{ fontSize: '0.78rem', color: C.blue, fontStyle: 'italic' }}>
-              Analyzing Your entire research Insights on the topic provided…
+              {isFallback ? 'Qualitative comparison preview from your input' : 'Analyzing Your entire research Insights on the topic provided…'}
             </span>
           </div>
           <div style={{ width: 28, height: 28, borderRadius: '50%', backgroundColor: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -383,6 +402,13 @@ export default function InsightsPage() {
             </svg>
           </div>
         </div>
+
+        {isFallback && (
+          <div role="status" style={{ backgroundColor: '#F2D2FF', border: `1px solid ${C.purpleChip}`, borderRadius: 8, padding: '10px 14px', marginBottom: 12, fontFamily: 'Inter, sans-serif' }}>
+            <div style={{ fontSize: '0.78rem', fontWeight: 700, color: C.navy, marginBottom: 3 }}>AI analysis temporarily unavailable</div>
+            <div style={{ fontSize: '0.72rem', color: C.navy, lineHeight: 1.5 }}>This comparison preview contains prompts based on your input only. It has no generated scores or verified conclusions.</div>
+          </div>
+        )}
 
         {/* ── Topic / headline bar ────────────────────────────── */}
         <div style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px 16px', display: 'flex', alignItems: 'center', marginBottom: 12, boxShadow: '0 1px 4px rgba(62,91,163,0.06)' }}>
@@ -408,13 +434,15 @@ export default function InsightsPage() {
         {/* ── Controls row ────────────────────────────────────── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <span style={{ fontSize: '0.78rem', color: C.navy, fontWeight: 500, whiteSpace: 'nowrap' }}>Insight view:</span>
-            <button
-              onClick={() => setView(v => v === 'bar' ? 'grid' : 'bar')}
-              style={{ backgroundColor: C.navy, color: C.white, border: `1px solid ${C.navy}`, borderRadius: 999, padding: '4px 13px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif', whiteSpace: 'nowrap' }}
-            >
-              {view === 'bar' ? 'Bar Graph' : 'Grid'}
-            </button>
+            <span style={{ fontSize: '0.78rem', color: C.navy, fontWeight: 500, whiteSpace: 'nowrap' }}>{isFallback ? 'Preview mode' : 'Insight view:'}</span>
+            {!isFallback && (
+              <button
+                onClick={() => setView(v => v === 'bar' ? 'grid' : 'bar')}
+                style={{ backgroundColor: C.navy, color: C.white, border: `1px solid ${C.navy}`, borderRadius: 999, padding: '4px 13px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif', whiteSpace: 'nowrap' }}
+              >
+                {view === 'bar' ? 'Bar Graph' : 'Grid'}
+              </button>
+            )}
           </div>
 
           {/* Comparison labels — only shown for comparison topics */}
@@ -451,7 +479,9 @@ export default function InsightsPage() {
           {/* LEFT: visualisation card */}
           <div style={{ flex: '1 1 0', minWidth: 0, backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', boxShadow: '0 2px 14px rgba(62,91,163,0.08)' }}>
             <AnimatePresence mode="wait">
-              {view === 'grid'
+              {isFallback
+                ? <QualitativeComparisonPreview key="qualitative-preview" areas={research.previewComparisonAreas ?? []} />
+                : view === 'grid'
                 ? <GridView key="grid" insights={research.insights} />
                 : <BarGraphView key="bargraph" insights={research.insights} />
               }
@@ -461,12 +491,14 @@ export default function InsightsPage() {
           {/* RIGHT: research suggests + shared findings */}
           <div style={{ width: 300, flexShrink: 0, backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', boxShadow: '0 2px 14px rgba(62,91,163,0.08)' }}>
             <p style={{ fontSize: '0.78rem', fontStyle: 'italic', color: C.navy, marginBottom: 12, fontWeight: 500 }}>
-              What the Research suggests
+              {isFallback ? 'Preliminary research areas' : 'What the Research suggests'}
             </p>
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
-              <DonutChart findings={research.findings} />
-            </div>
-            <p style={{ fontSize: '0.73rem', fontWeight: 600, color: C.navy, marginBottom: 9 }}>Shared findings</p>
+            {!isFallback && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
+                <DonutChart findings={research.findings} />
+              </div>
+            )}
+            <p style={{ fontSize: '0.73rem', fontWeight: 600, color: C.navy, marginBottom: 9 }}>{isFallback ? 'Preliminary areas' : 'Shared findings'}</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 12 }}>
               {research.findings.slice(0, 4).map((f) => (
                 <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -479,12 +511,13 @@ export default function InsightsPage() {
             {/* Evidence card */}
             <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden' }}>
               <div style={{ backgroundColor: C.navy, color: C.white, fontSize: '0.63rem', fontWeight: 600, textAlign: 'center', padding: '5px 10px', letterSpacing: '0.02em' }}>
-                Evidence Followed by Impact
+                {isFallback ? 'Research prompts — not verified evidence' : 'Evidence Followed by Impact'}
               </div>
               <div style={{ padding: '8px 11px 10px' }}>
                 {firstEvidence
                   ? (
                     <>
+                      {isFallback && <div style={{ fontSize: '0.62rem', fontWeight: 700, color: C.blue, marginBottom: 5 }}>Research prompt — not verified evidence</div>}
                       <p style={{ fontSize: '0.7rem', color: C.navy, lineHeight: 1.55, marginBottom: 8 }}>
                         {firstEvidence.text.length > 120
                           ? firstEvidence.text.slice(0, 120) + '…'
@@ -497,7 +530,7 @@ export default function InsightsPage() {
                   )
                   : (
                     <>
-                      <p style={{ fontSize: '0.68rem', fontStyle: 'italic', color: '#8090B0', marginBottom: 8 }}>No evidence yet</p>
+                      <p style={{ fontSize: '0.68rem', fontStyle: 'italic', color: '#8090B0', marginBottom: 8 }}>{isFallback ? 'No prompts available' : 'No evidence yet'}</p>
                       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                         <Chip label="Sources" bg="rgba(128,144,200,0.16)" color="#6070A0" />
                       </div>
@@ -510,7 +543,7 @@ export default function InsightsPage() {
         </div>
 
         {/* ── View toggle pills ──────────────────────────────── */}
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 20 }}>
+        {!isFallback && <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 20 }}>
           {(['grid', 'bar'] as ViewMode[]).map((v) => (
             <button key={v} onClick={() => setView(v)} style={{
               backgroundColor: view === v ? C.white : 'transparent',
@@ -523,7 +556,7 @@ export default function InsightsPage() {
               {v === 'grid' ? 'Grid' : 'Bar graph'}
             </button>
           ))}
-        </div>
+        </div>}
 
         {/* ── Bottom row: Key Difference + Trade-off + Ask ─── */}
         <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
@@ -532,7 +565,7 @@ export default function InsightsPage() {
           <div style={{ flex: '1 1 0', minWidth: 0, backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', boxShadow: '0 2px 10px rgba(62,91,163,0.07)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 10 }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.navy }} />
-              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: C.navy }}>Key Difference</span>
+              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: C.navy }}>{isFallback ? 'Comparison preview' : 'Key Difference'}</span>
             </div>
             {isComp && (
               <div style={{ display: 'flex', gap: 7, marginBottom: 12 }}>
@@ -552,7 +585,7 @@ export default function InsightsPage() {
               {discoveryFinding?.tags.slice(0, 2).map((t, i) => (
                 <Chip key={i} label={t} bg="transparent" color={C.purpleChip} border={C.purpleChip} />
               )) ?? <Chip label="Discovery" bg="transparent" color={C.purpleChip} border={C.purpleChip} />}
-              <Chip label="Evidence" bg={C.teal} color={C.white} />
+              <Chip label={isFallback ? 'Preview prompt' : 'Evidence'} bg={C.teal} color={C.white} />
             </div>
           </div>
 
@@ -560,7 +593,7 @@ export default function InsightsPage() {
           <div style={{ flex: '2 1 0', minWidth: 0, backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', boxShadow: '0 2px 10px rgba(62,91,163,0.07)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 14 }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.navy }} />
-              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: C.navy }}>Trade-off</span>
+              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: C.navy }}>{isFallback ? 'Areas to compare' : 'Trade-off'}</span>
             </div>
             <div style={{ display: 'flex', gap: 14 }}>
               {/* Column A */}
@@ -598,7 +631,7 @@ export default function InsightsPage() {
                 : 'Alternative approach details available after analysis.'}
             </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Chip label="Evidence" bg={C.teal} color={C.white} />
+              <Chip label={isFallback ? 'Preview prompts' : 'Evidence'} bg={C.teal} color={C.white} />
             </div>
           </div>
 

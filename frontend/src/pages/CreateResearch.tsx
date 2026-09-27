@@ -2,7 +2,8 @@ import { useState, useRef, useCallback } from 'react'
 import { motion } from 'motion/react'
 import { useNavigate } from 'react-router-dom'
 import { useResearch, buildResearch } from '../context/ResearchContext'
-import { analyzeResearch } from '../api/analyzeApi'
+import { AnalyzeApiError, analyzeResearch } from '../api/analyzeApi'
+import { createFallbackResearch } from '../utils/createFallbackResearch'
 
 const GOALS = ['Explore', 'Compare', 'Validate', 'Analyze', 'Investigate', 'Other']
 
@@ -150,15 +151,16 @@ export default function CreateResearch() {
     const resolvedTitle  = title.trim()   || 'TOPIC NAME'
     const resolvedDomain = domain         || 'Technology'
     const resolvedGoal   = selectedGoals.join(', ') || 'Explore'
+    const payload = {
+      title: resolvedTitle,
+      question: description.trim(),
+      goal: resolvedGoal,
+      domain: resolvedDomain,
+      context: context.trim(),
+    }
 
     try {
-      const result = await analyzeResearch({
-        title:    resolvedTitle,
-        question: description.trim(),
-        goal:     resolvedGoal,
-        domain:   resolvedDomain,
-        context:  context.trim(),
-      })
+      const result = await analyzeResearch(payload)
 
       // Merge API response into shared Research state.
       // buildResearch fills any missing fields with mock defaults.
@@ -176,13 +178,33 @@ export default function CreateResearch() {
           findings:      result.findings,
           relationships: result.relationships,
           insights:      result.insights,
+          analysisMode:  'gemini',
+          previewComparisonSubjects: [],
+          previewComparisonAreas: [],
         })
       )
       navigate('/analysis')
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Research analysis failed. Please try again.'
       console.error('[CreateResearch] /api/analyze failed:', err)
-      setAnalysisError(message)
+      const temporaryAvailabilityError = err instanceof AnalyzeApiError
+        ? err.code === 'GEMINI_ANALYSIS_FAILED' || err.status >= 500
+        : err instanceof TypeError || /network|failed to fetch|load failed|temporarily unavailable|quota exceeded/i.test(message)
+
+      if (temporaryAvailabilityError) {
+        const fallback = createFallbackResearch(
+          payload,
+          resourceLinks.map((label, index) => ({ label, selected: checkedResources[index] ?? false })),
+          err instanceof AnalyzeApiError ? err.researchType : undefined,
+        )
+        setResearch(buildResearch({
+          ...payload,
+          ...fallback,
+        }))
+        navigate('/analysis')
+      } else {
+        setAnalysisError(message)
+      }
     } finally {
       setIsLoading(false)
     }

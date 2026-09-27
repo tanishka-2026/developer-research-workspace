@@ -53,6 +53,9 @@ export interface Research {
   findings: Finding[]
   relationships: Relationship[]
   insights: Insight[]
+  analysisMode?: 'gemini' | 'fallback-preview'
+  previewComparisonSubjects?: string[]
+  previewComparisonAreas?: string[]
 }
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
@@ -146,6 +149,9 @@ export function buildResearch(partial: Partial<Research>): Research {
     findings:      partial.findings      ?? MOCK_FINDINGS,
     relationships: partial.relationships ?? MOCK_RELATIONSHIPS,
     insights:      partial.insights      ?? MOCK_INSIGHTS,
+    analysisMode:  partial.analysisMode  ?? 'gemini',
+    previewComparisonSubjects: partial.previewComparisonSubjects ?? [],
+    previewComparisonAreas: partial.previewComparisonAreas ?? [],
   }
 }
 

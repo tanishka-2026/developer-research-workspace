@@ -77,10 +77,11 @@ interface DetailPanelProps {
   finding: Finding | null
   evidence: Evidence[]
   sources: Source[]
+  fallbackPreview: boolean
   onClose: () => void
 }
 
-function DetailPanel({ finding, evidence, sources, onClose }: DetailPanelProps) {
+function DetailPanel({ finding, evidence, sources, fallbackPreview, onClose }: DetailPanelProps) {
   if (!finding) return null
 
   const catColors: Record<Finding['category'], string> = {
@@ -184,7 +185,7 @@ function DetailPanel({ finding, evidence, sources, onClose }: DetailPanelProps) 
                 {relatedEvidence.length > 0 && (
                   <div style={{ marginBottom: 20 }}>
                     <div style={{ fontSize: '0.72rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>
-                      Supporting Evidence
+                      {fallbackPreview ? 'Research Prompts (Not Verified Evidence)' : 'Supporting Evidence'}
                     </div>
                     {relatedEvidence.map((ev, i) => (
                       <div key={i} style={{
@@ -203,7 +204,7 @@ function DetailPanel({ finding, evidence, sources, onClose }: DetailPanelProps) 
                 {sources.length > 0 && (
                   <div>
                     <div style={{ fontSize: '0.72rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>
-                      Sources
+                      {fallbackPreview ? 'User-Provided Sources' : 'Sources'}
                     </div>
                     {sources.map((s, i) => (
                       <div key={s.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
@@ -238,10 +239,11 @@ function DetailPanel({ finding, evidence, sources, onClose }: DetailPanelProps) 
 interface EvidenceDetailProps {
   ev: Evidence | null
   sources: Source[]
+  fallbackPreview: boolean
   onClose: () => void
 }
 
-function EvidenceDetailPanel({ ev, sources, onClose }: EvidenceDetailProps) {
+function EvidenceDetailPanel({ ev, sources, fallbackPreview, onClose }: EvidenceDetailProps) {
   if (!ev) return null
   return (
     <AnimatePresence>
@@ -269,7 +271,7 @@ function EvidenceDetailPanel({ ev, sources, onClose }: EvidenceDetailProps) {
               {/* Header */}
               <div style={{ backgroundColor: C.evidenceChip, padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.75)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700 }}>
-                  Evidence · {ev.category.replace(/-/g, ' ')}
+                  {fallbackPreview ? 'Research prompt' : 'Evidence'} · {ev.category.replace(/-/g, ' ')}
                 </div>
                 <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: 8, width: 28, height: 28, cursor: 'pointer', color: C.white, fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
               </div>
@@ -279,7 +281,7 @@ function EvidenceDetailPanel({ ev, sources, onClose }: EvidenceDetailProps) {
                   <p style={{ fontSize: '0.9rem', color: C.navy, lineHeight: 1.7, margin: 0 }}>{ev.text}</p>
                 </div>
                 {/* Sources */}
-                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>Sources</div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: C.navy, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 10 }}>{fallbackPreview ? 'User-Provided Sources' : 'Sources'}</div>
                 {sources.map((s, i) => (
                   <div key={s.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
                     <div style={{ width: 20, height: 20, borderRadius: '50%', backgroundColor: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
@@ -420,7 +422,7 @@ function EvidenceNodeRF({ data }: { data: any }) {
       boxShadow: '0 3px 14px rgba(62,91,163,0.09)'
     }}>
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
-      <NodeHeader label="Evidence followed by impact" bg={C.evidenceChip} color={C.white} />
+      <NodeHeader label={data.fallbackPreview ? 'Research prompts to investigate' : 'Evidence followed by impact'} bg={C.evidenceChip} color={C.white} />
       <div style={{ padding: '10px 14px 14px' }}>
         {items.map((ev) => (
           <div
@@ -745,13 +747,14 @@ interface CanvasProps {
   evidence: Evidence[]
   sources: Source[]
   relationships: any[]
+  fallbackPreview: boolean
   title: string
   domain: string
   onFindingClick: (f: Finding) => void
   onEvidenceClick: (ev: Evidence) => void
 }
 
-function ResearchCanvas({ findings, evidence, sources, relationships, title, domain, onFindingClick, onEvidenceClick }: Omit<CanvasProps, 'zoom' | 'askOpen' | 'setAskOpen'>) {
+function ResearchCanvas({ findings, evidence, sources, relationships, fallbackPreview, title, domain, onFindingClick, onEvidenceClick }: Omit<CanvasProps, 'zoom' | 'askOpen' | 'setAskOpen'>) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
 
@@ -824,7 +827,7 @@ function ResearchCanvas({ findings, evidence, sources, relationships, title, dom
       id: 'evidence',
       type: 'evidence',
       position: { x: 340, y: 530 },
-      data: { evidence, sources, onEvidenceClick }
+      data: { evidence, sources, fallbackPreview, onEvidenceClick }
     })
     initialEdges.push({
       id: `e-topic-evidence`,
@@ -845,7 +848,7 @@ function ResearchCanvas({ findings, evidence, sources, relationships, title, dom
 
     setNodes(initialNodes)
     setEdges(initialEdges)
-  }, [title, domain, findings, evidence, sources, relationships, onFindingClick, onEvidenceClick, setNodes, setEdges])
+  }, [title, domain, findings, evidence, sources, relationships, fallbackPreview, onFindingClick, onEvidenceClick, setNodes, setEdges])
 
   return (
     <div style={{ height: 520, width: '100%', borderRadius: 14, overflow: 'hidden', border: `1px solid ${C.borderMid}` }}>
@@ -909,11 +912,13 @@ export default function AnalysisPage() {
         finding={detailFinding}
         evidence={research.evidence}
         sources={research.sources}
+        fallbackPreview={research.analysisMode === 'fallback-preview'}
         onClose={() => setDetailFinding(null)}
       />
       <EvidenceDetailPanel
         ev={detailEvidence}
         sources={research.sources}
+        fallbackPreview={research.analysisMode === 'fallback-preview'}
         onClose={() => setDetailEvidence(null)}
       />
 
@@ -924,7 +929,7 @@ export default function AnalysisPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: C.teal, flexShrink: 0 }} />
             <span style={{ fontSize: '0.78rem', color: C.blue, fontStyle: 'italic' }}>
-              Analyzing Your entire research on the topic provided…
+              {research.analysisMode === 'fallback-preview' ? 'Structured research preview from your input' : 'Analyzing Your entire research on the topic provided…'}
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -945,6 +950,13 @@ export default function AnalysisPage() {
             </div>
           </div>
         </div>
+
+        {research.analysisMode === 'fallback-preview' && (
+          <div role="status" style={{ backgroundColor: '#F2D2FF', border: `1px solid ${C.purpleChip}`, borderRadius: 8, padding: '10px 14px', marginBottom: 10, fontFamily: 'Inter, sans-serif' }}>
+            <div style={{ fontSize: '0.78rem', fontWeight: 700, color: C.navy, marginBottom: 3 }}>AI analysis temporarily unavailable</div>
+            <div style={{ fontSize: '0.72rem', color: C.navy, lineHeight: 1.5 }}>Showing a structured research preview based on your research input. This is not AI-generated or externally verified research.</div>
+          </div>
+        )}
 
         {/* ── Topic bar ──────────────────────────────────────────────── */}
         <div style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px 16px', display: 'flex', alignItems: 'center', marginBottom: 10, boxShadow: '0 1px 4px rgba(62,91,163,0.06)' }}>
@@ -973,7 +985,7 @@ export default function AnalysisPage() {
             {research.summary || research.question || research.context || 'Summary..'}
           </span>
           <div style={{ position: 'absolute', bottom: 12, right: 16 }}>
-            <Chip label="Evidence" bg={C.teal} color={C.white} />
+            <Chip label={research.analysisMode === 'fallback-preview' ? 'Preview' : 'Evidence'} bg={C.teal} color={C.white} />
           </div>
         </div>
 
@@ -1020,6 +1032,7 @@ export default function AnalysisPage() {
             <ResearchCanvas
               findings={research.findings} evidence={research.evidence}
               sources={research.sources} relationships={research.relationships} 
+              fallbackPreview={research.analysisMode === 'fallback-preview'}
               title={research.title} domain={research.domain}
               onFindingClick={setDetailFinding}
               onEvidenceClick={setDetailEvidence}

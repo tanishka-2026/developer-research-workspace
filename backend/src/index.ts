@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import cors from 'cors'
 import express from 'express'
-import analyzeRouter from './routes/analyzeRoute'
+import analyzeRouter from './routes/analyze'
 import chatRouter from './routes/chat'
 
 const app = express()
