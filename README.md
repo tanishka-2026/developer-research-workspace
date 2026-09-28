@@ -1,68 +1,110 @@
-# IBM Hackathon GitHub Project Template
+# ResearchNest
 
-This GitHub project template is for IBM Hackathon projects. It includes pre-configured security files to help prevent accidental credential commits and potential account suspension during the hackathon.
+### From questions to understanding.
 
-## 🚀 Quick Start
+ResearchNest is an AI-powered developer research workspace that turns technical questions into structured, visual, and actionable insights.
 
-1. **Use this template to create your project:**
-   - Click "Use this template" button above and select "Create a new repository"
-   - Name your repository
-   - Click "Create repository"
+## 🚀 Problem
 
-2. **Clone your new repository:**
+Developers often spend significant time researching before they can start building. Information is scattered across documentation, blogs, tutorials, forums, videos, and browser tabs.
 
-   ```bash
-   git clone https://github.com/HACKATHON-ORG/your-repo-name.git
-   cd your-repo-name
-   ```
+Comparing technologies also requires switching between multiple sources and manually identifying differences and trade-offs.
 
-3. **Set up environment variables:**
+## 💡 Solution
 
-   ```bash
-   # Copy the example file
-   cp .env.example .env
+ResearchNest brings the research process into one connected workspace.
 
-   # Edit .env with your actual credentials
-   # Use your preferred editor (nano, vim, code, etc.)
-   nano .env
-   ```
+Users can:
 
-4. **Verify .gitignore is working:**
+- Enter a technical question or topic
+- Add their own research resources
+- Generate structured research analysis
+- Explore findings, evidence, and sources
+- Visualize relationships through an interactive Research Map
+- Compare technologies through Research Insights
+- Ask contextual follow-up questions with Ask ResearchNest
 
-   ```bash
-   # This should NOT show .env file
-   git status
+## 🔄 How It Works
 
-   # This should confirm .env is ignored
-   git check-ignore -v .env
-   ```
+1. Enter a technical research question
+2. Add relevant resources if needed
+3. Analyze the research topic
+4. Explore structured findings and evidence
+5. Navigate the interactive Research Map
+6. Explore Insights for comparison topics
+7. Ask contextual follow-up questions
 
-5. **Start developing!**
+## 🧠 Key Features
 
-## 🔒 Security Features
+- AI-powered research analysis
+- Interactive Research Map
+- Evidence and source organization
+- Technology comparison Insights
+- Contextual AI follow-up questions
+- User-provided resource filtering
+- Single-topic and comparison research workflows
+- Structured research workspace
 
-This template includes:
+## 🛠️ Tech Stack
 
-- **`.gitignore`** - Prevents committing credentials and live session files
-- **`.bobignore`** - Prevents AI assistants from logging credentials
-- **`.env.example`** - Template for your environment variables
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+- Node.js
+- Express.js
+- React Flow
+- Google Gemini API
+- GitHub
+- Figma
+- IBM Bob 2.0
 
-## 📋 Before Every Commit
+## 🤖 IBM Bob 2.0
 
-Always run this checklist:
+IBM Bob 2.0 was used as the primary agentic development environment for ResearchNest.
 
-- [ ] Reviewed `git diff` for sensitive data
-- [ ] No hardcoded API keys or passwords
-- [ ] `.env` file is NOT in staged changes
-- [ ] No files with "credential" or "secret" in name
-- [ ] Used environment variables for all credentials
+Bob was used for:
 
-## 🆘 Need Help?
+- Planning the application architecture
+- Converting the product concept and UI designs into implementation
+- Building and refining the React/TypeScript frontend
+- Implementing the interactive Research Map
+- Developing the Node.js/Express backend
+- Integrating the AI research-analysis pipeline
+- Debugging and refactoring
+- Build verification and integration
+- Implementing single-topic and comparison research workflows
 
-- Read [SECURITY.md](SECURITY.MD) for detailed guidelines
-- Contact hackathon support through mentor channel
-- Ask in the hackathon Slack workspace
+Bob was used as the development environment and was not embedded inside the ResearchNest product.
 
----
+## 🤖 AI
 
-**Remember:** Security is everyone's responsibility. When in doubt, ask for help!
+ResearchNest uses the Gemini API for research-analysis functionality.
+
+We explored IBM watsonx.ai during development, but the required Watson Machine Learning project/service association was unavailable for our project, so watsonx.ai and watsonx Orchestrate are not used as runtime services.
+
+## 🎯 Target Users
+
+Developers researching:
+
+- New technologies
+- Frameworks
+- Tools
+- Technical concepts
+- Architecture decisions
+- Technology comparisons
+
+## 🌱 Future Scope
+
+- More research sources and integrations
+- Persistent research history
+- Advanced source verification
+- Collaborative research workspaces
+- More comparison visualizations
+- Improved AI research synthesis
+
+## 👩‍💻 Built For
+
+IBM Bob Hackathon 2.0
+
+**ResearchNest — Question → Research → Understanding → Decision**
