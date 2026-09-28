@@ -14,6 +14,7 @@ export interface GeminiInput {
 
 export interface GeminiResearchResult {
   researchType: 'comparison' | 'single'
+  analysisMode: 'gemini' | 'fallback-preview'
   summary: string
   sources: Array<{ id: string; label: string; url?: string }>
   evidence: Array<{ id: string; text: string; category: string }>
@@ -205,33 +206,195 @@ Return STRICT valid JSON matching the supplied schema. Do not return Markdown, c
 Research request:
 ${JSON.stringify(input)}`
 }
+function buildFallbackResearch(
+  input: GeminiInput,
+  researchType: 'single' | 'comparison',
+): GeminiResearchResult {
+  const topic = input.title || 'this technology topic'
 
-export async function generateResearch(input: GeminiInput): Promise<GeminiResearchResult> {
-  const researchType = classifyResearchType(input.title, input.question)
-  const response = await getClient().models.generateContent({
-    model: MODEL,
-    contents: buildAnalysisPrompt(input, researchType),
-    config: {
-      responseMimeType: 'application/json',
-      responseJsonSchema: researchResponseSchema,
-      tools: [{ googleSearch: {} }],
-      temperature: 0.2,
-      maxOutputTokens: 6000,
+  const comparisonMatch = input.title.match(
+    /^(.+?)\s+(?:vs\.?|versus|against)\s+(.+)$/i,
+  )
+
+  const subjectA = comparisonMatch?.[1]?.trim() || 'Option A'
+  const subjectB = comparisonMatch?.[2]?.trim() || 'Option B'
+
+  const findings = [
+    {
+      id: 'f1',
+      title: `Core factors in ${topic}`,
+      summary: `The main factors to investigate for ${topic} are defined by the research question, goal, domain, and project requirements provided by the developer.`,
+      category: 'main-factor' as const,
+      tags: ['Core', 'Factors', input.domain || 'Technology'],
     },
-  })
+    {
+      id: 'f2',
+      title: `Use cases for ${topic}`,
+      summary: `The most relevant use cases should be evaluated against the developer's stated requirements and intended project context.`,
+      category: 'use-case' as const,
+      tags: ['Use Cases', 'Projects', 'Requirements'],
+    },
+    {
+      id: 'f3',
+      title: `Limitations to investigate`,
+      summary: `Potential limitations should be checked against the specific constraints and requirements described in the research request.`,
+      category: 'limitation' as const,
+      tags: ['Limitations', 'Constraints', 'Evaluation'],
+    },
+    {
+      id: 'f4',
+      title: `Alternative approaches`,
+      summary: `Alternative technologies or approaches can be considered where they better match the project's requirements or constraints.`,
+      category: 'alternative' as const,
+      tags: ['Alternatives', 'Options', 'Trade-offs'],
+    },
+    {
+      id: 'f5',
+      title: `Expected project impact`,
+      summary: `The practical impact of the technology should be evaluated in terms of the goals and project requirements supplied by the developer.`,
+      category: 'impact' as const,
+      tags: ['Impact', 'Project', 'Outcome'],
+    },
+    {
+      id: 'f6',
+      title: `Research questions to explore`,
+      summary: `Further investigation should focus on the areas identified in the question and context rather than assuming unsupported technical claims.`,
+      category: 'discovery' as const,
+      tags: ['Discovery', 'Research', 'Questions'],
+    },
+  ]
 
-  const text = response.text?.trim()
-  if (!text) throw new Error('Gemini returned an empty research response')
-  const groundedSources = [...new Map(
-    (response.candidates ?? [])
-      .flatMap(candidate => candidate.groundingMetadata?.groundingChunks ?? [])
-      .flatMap(chunk => chunk.web?.uri && chunk.web.title ? [{ label: chunk.web.title, url: chunk.web.uri }] : [])
-      .filter(source => /^https?:\/\//i.test(source.url))
-      .map(source => [source.url, source] as const),
-  ).values()]
-    .slice(0, 4)
-    .map((source, index) => ({ id: `s${index + 1}`, ...source }))
-  return parseResearchResponse(text, input, groundedSources)
+  const evidence = [
+    {
+      id: 'e1',
+      text: `Research request: ${input.question || 'No specific question provided.'}`,
+      category: 'main-factor',
+    },
+    {
+      id: 'e2',
+      text: `Goal: ${input.goal || 'Explore the topic.'}`,
+      category: 'use-case',
+    },
+    {
+      id: 'e3',
+      text: `Context: ${input.context || 'No additional context provided.'}`,
+      category: 'impact',
+    },
+  ]
+
+  const relationships = [
+    { from: 'f1', to: 'f2', label: 'informs' },
+    { from: 'f1', to: 'f3', label: 'reveals constraints' },
+    { from: 'f3', to: 'f4', label: 'may require' },
+    { from: 'f2', to: 'f5', label: 'influences' },
+    { from: 'f6', to: 'f1', label: 'supports investigation' },
+  ]
+
+  const insights =
+    researchType === 'comparison'
+      ? [
+          {
+            metric: 'Performance',
+            valueA: 50,
+            valueB: 50,
+            labelA: subjectA,
+            labelB: subjectB,
+          },
+          {
+            metric: 'Ecosystem',
+            valueA: 50,
+            valueB: 50,
+            labelA: subjectA,
+            labelB: subjectB,
+          },
+          {
+            metric: 'Learning curve',
+            valueA: 50,
+            valueB: 50,
+            labelA: subjectA,
+            labelB: subjectB,
+          },
+          {
+            metric: 'Scalability',
+            valueA: 50,
+            valueB: 50,
+            labelA: subjectA,
+            labelB: subjectB,
+          },
+        ]
+      : []
+
+  return {
+    researchType,
+    analysisMode: 'fallback-preview',
+    summary:
+      `Research preview for "${topic}". Gemini analysis is temporarily unavailable, ` +
+      `so this workspace contains a structured research outline based only on the information provided.`,
+    sources: [],
+    evidence,
+    findings,
+    relationships,
+    insights,
+  }
+}
+export async function generateResearch(
+  input: GeminiInput,
+): Promise<GeminiResearchResult> {
+  const researchType = classifyResearchType(input.title, input.question)
+
+  try {
+    const response = await getClient().models.generateContent({
+      model: MODEL,
+      contents: buildAnalysisPrompt(input, researchType),
+      config: {
+        responseMimeType: 'application/json',
+        responseJsonSchema: researchResponseSchema,
+        tools: [{ googleSearch: {} }],
+        temperature: 0.2,
+        maxOutputTokens: 6000,
+      },
+    })
+
+    const text = response.text?.trim()
+
+    if (!text) {
+      throw new Error('Gemini returned an empty research response')
+    }
+
+    const groundedSources = [
+      ...new Map(
+        (response.candidates ?? [])
+          .flatMap(
+            candidate =>
+              candidate.groundingMetadata?.groundingChunks ?? [],
+          )
+          .flatMap(chunk =>
+            chunk.web?.uri && chunk.web.title
+              ? [{ label: chunk.web.title, url: chunk.web.uri }]
+              : [],
+          )
+          .filter(source => /^https?:\/\//i.test(source.url))
+          .map(source => [source.url, source] as const),
+      ).values(),
+    ]
+      .slice(0, 4)
+      .map((source, index) => ({
+        id: `s${index + 1}`,
+        ...source,
+      }))
+
+    return {
+      ...parseResearchResponse(text, input, groundedSources),
+      analysisMode: 'gemini',
+    }
+  } catch (error) {
+    console.error(
+      '[Gemini] Analysis unavailable. Returning structured fallback:',
+      error,
+    )
+
+    return buildFallbackResearch(input, researchType)
+  }
 }
 
 export async function generateChatReply(messages: GeminiChatMessage[]): Promise<string> {
