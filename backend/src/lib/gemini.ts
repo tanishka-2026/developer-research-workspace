@@ -350,7 +350,6 @@ export async function generateResearch(
         responseMimeType: 'application/json',
         responseJsonSchema: researchResponseSchema,
         tools: [{ googleSearch: {} }],
-        temperature: 0.2,
         maxOutputTokens: 6000,
       },
     })
@@ -388,13 +387,13 @@ export async function generateResearch(
       analysisMode: 'gemini',
     }
   } catch (error) {
-    console.error(
-      '[Gemini] Analysis unavailable. Returning structured fallback:',
-      error,
-    )
+  console.error(
+    '[Gemini] Analysis unavailable. Returning structured fallback:',
+    error,
+  )
 
-    return buildFallbackResearch(input, researchType)
-  }
+  return buildFallbackResearch(input, researchType)
+}
 }
 
 export async function generateChatReply(messages: GeminiChatMessage[]): Promise<string> {
