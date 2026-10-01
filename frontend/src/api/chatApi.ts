@@ -25,9 +25,10 @@ export interface ChatPayload {
 }
 
 export async function sendChatMessage(payload: ChatPayload): Promise<string> {
- const API_URL = import.meta.env.VITE_API_URL || ''
+  const API_URL =
+    import.meta.env.VITE_API_URL || 'https://my-repo-p1tu.onrender.com'
 
-const res = await fetch(`${API_URL}/api/chat`, {
+  const res = await fetch(`${API_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
