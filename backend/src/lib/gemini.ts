@@ -206,7 +206,7 @@ Return STRICT valid JSON matching the supplied schema. Do not return Markdown, c
 Research request:
 ${JSON.stringify(input)}`
 }
-function buildFallbackResearch(
+export function buildFallbackResearch(
   input: GeminiInput,
   researchType: 'single' | 'comparison',
 ): GeminiResearchResult {
