@@ -25,7 +25,9 @@ export interface ChatPayload {
 }
 
 export async function sendChatMessage(payload: ChatPayload): Promise<string> {
-  const res = await fetch('/api/chat', {
+ const API_URL = import.meta.env.VITE_API_URL || ''
+
+const res = await fetch(`${API_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
